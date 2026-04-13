@@ -1,0 +1,56 @@
+CREATE OR REPLACE FUNCTION agregar_masivos() RETURNS void AS $$
+DECLARE
+	ultimo_modelo_id INTEGER;
+	nuevo_modelo_id INTEGER;
+	dniTrabajador INTEGER;
+	tipoFalla INTEGER;
+	capacidad INTEGER := 50;
+	hs_vuelo INTEGER := 0;
+	ultimo_id INTEGER;
+BEGIN
+	FOR i IN 1..10 LOOP
+		--OBtener el ultimo tipo de modelo avion
+		SELECT MAX("tipoModelo") INTO ultimo_modelo_id FROM avion;
+		IF ultimo_modelo_id IS NULL THEN
+			nuevo_modelo_id := 0;
+		ELSE
+			nuevo_modelo_id := ultimo_modelo_id + 1;
+		END IF;
+
+		--Insertar un nuevo modelo de avion
+		capacidad := capacidad + 1;
+		INSERT INTO "modeloAvion" ("tipoModelo", descripcion, capacidad)
+		VALUES (nuevo_modelo_id, 'Boeing 700', capacidad);
+
+		--Obtener el ultimo nro de avion
+		SELECT MAX("nroAvion") INTO ultimo_id FROM avion;
+		IF ultimo_id IS NULL THEN
+			ultimo_id := 0;
+		END IF;
+
+		--Insertar aviones masivamente
+		FOR j IN 1..100 LOOP
+			ultimo_id := ultimo_id + 1;  --Incrementar el ultimo valor del id avion
+			hs_vuelo := hs_vuelo + 1;
+			INSERT INTO "avion" ("nroAvion", "tipoModelo", año, "horasVuelo")
+			VALUES (ultimo_id, nuevo_modelo_id, 2025, hs_vuelo);
+
+			SELECT dni INTO dniTrabajador FROM "trabajador"  ORDER BY RANDOM() LIMIT 1;
+			SELECT tipoFalla INTO tipoFalla FROM "falla"  ORDER BY RANDOM() LIMIT 1;
+			
+			--Insertar una reparacion para el avion
+			INSERT INTO "trabajadorReparacion" ("dniTrabajador", "nroAvion", "fechaInicioReparacion", "fechaFinReparacion", "tipoFallaReparada")
+			VALUES (dniTrabajador, ultimo_id, CURRENT_DATE, CURRENT_DATE + INTERVAL '10 days', tipoFalla);
+			
+		END LOOP;
+
+	END LOOP;
+END;
+$$ LANGUAGE plpgsql;
+
+SELECT agregar_masivos();
+
+--Limpiar tablas
+--DELETE FROM "modeloAvion" WHERE "tipoModelo" > 12
+--DELETE FROM avion WHERE "nroAvion" > 1005
+--DELETE FROM "trabajadorReparacion" WHERE "nroAvion" > 1005
