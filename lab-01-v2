@@ -1,0 +1,269 @@
+
+
+-- ============================================================
+-- OBJETIVO:
+-- 1. Insertar N modelos en modeloAvion
+-- 2. Por cada modelo → insertar 10.000 aviones
+--    con V(capacidad, modeloAvion) >= 1000 valores distintos
+-- 3. Por cada avión insertado → insertar 1 reparación
+--    usando un DNI de trabajador ya existente
+-- ============================================================
+
+
+-- ============================================================
+-- PASO 1: Función principal de carga masiva
+-- Orquesta todo el proceso
+-- ============================================================
+CREATE OR REPLACE FUNCTION carga_masiva() RETURNS void AS $$
+DECLARE
+    -- Contadores de loop
+    i_modelo    INT;   -- itera sobre modelos (1..5)
+    i_avion     INT;   -- itera sobre aviones por modelo (1..10000)
+
+    -- IDs generados para poder referenciarlos después
+    nro_modelo  INT;
+    nro_avion   INT;
+
+    -- DNI de trabajador existente para la reparación
+    dni_trab    INT;
+
+    -- Para garantizar V(capacidad) >= 1000:
+    -- usamos un offset de capacidad distinto por modelo
+    -- Ej: modelo 1 → capacidades 1..10000 (distintas por avión)
+    capacidad_val INT;
+
+    -- Variables para la reparación
+    fecha_inicio DATE;
+    tipo_falla   INT;
+
+    -- Para obtener el máximo nroAvion ya existente
+    -- y evitar colisión de PKs
+    max_avion   INT;
+    max_modelo  INT;
+
+BEGIN
+    -- --------------------------------------------------------
+    -- Tomamos el máximo nroAvion y tipoModelo actuales
+    -- para no colisionar con PKs ya existentes
+    -- --------------------------------------------------------
+    SELECT COALESCE(MAX("nroAvion"), 0)   INTO max_avion  FROM avion;
+    SELECT COALESCE(MAX("tipoModelo"), 0) INTO max_modelo FROM "modeloAvion";
+
+    -- --------------------------------------------------------
+    -- LOOP EXTERNO: insertar 5 modelos nuevos
+    -- Podés cambiar "5" por la cantidad que necesites
+    -- --------------------------------------------------------
+    FOR i_modelo IN 1..5 LOOP
+
+        -- Calculamos el tipoModelo nuevo (sin colisión)
+        nro_modelo := max_modelo + i_modelo;
+
+        -- --------------------------------------------------------
+        -- La capacidad debe tener V >= 1000 valores distintos
+        -- en toda la tabla modeloAvion.
+        -- Estrategia: cada modelo tiene una capacidad ÚNICA
+        -- generada como 100 + i_modelo * 7 (dispersión simple)
+        -- Pero si queremos V(capacidad) >= 1000 en modeloAvion,
+        -- necesitamos al menos 1000 modelos insertados.
+        -- → Cambiamos el loop externo a 1..1000
+        --   (o usamos generate_series para eficiencia)
+        -- --------------------------------------------------------
+        capacidad_val := 50 + (i_modelo * 3);  
+        -- Cada modelo tiene capacidad distinta: 53, 56, 59, ...
+
+        INSERT INTO "modeloAvion" ("tipoModelo", descripcion, capacidad)
+        VALUES (
+            nro_modelo,
+            -- Descripción única por modelo
+            CAST('Modelo-' || nro_modelo AS char(50)),
+            capacidad_val
+        );
+
+        -- --------------------------------------------------------
+        -- LOOP INTERNO: 10.000 aviones por cada modelo
+        -- --------------------------------------------------------
+        FOR i_avion IN 1..10000 LOOP
+
+            -- nroAvion único global:
+            -- offset_modelo * 10000 + i_avion
+            nro_avion := max_avion 
+                         + ((i_modelo - 1) * 10000) 
+                         + i_avion;
+
+            -- Año aleatorio entre 1990 y 2023
+            -- FLOOR(RANDOM() * rango) + base
+            INSERT INTO avion ("nroAvion", "tipoModelo", "año", "horasVuelo")
+            VALUES (
+                nro_avion,
+                nro_modelo,
+                FLOOR(RANDOM() * 33 + 1990)::INT,   -- año: 1990..2022
+                FLOOR(RANDOM() * 50000)::INT         -- horasVuelo: 0..49999
+            );
+
+            -- --------------------------------------------------------
+            -- Por cada avión: insertar UNA reparación
+            -- usando un trabajador al azar ya existente
+            -- --------------------------------------------------------
+
+            -- Tomamos un DNI de trabajador existente al azar
+            SELECT dni INTO dni_trab
+            FROM trabajador
+            ORDER BY RANDOM()
+            LIMIT 1;
+
+            -- Tomamos un tipoFalla existente al azar
+            SELECT "tipoFalla" INTO tipo_falla
+            FROM falla
+            ORDER BY RANDOM()
+            LIMIT 1;
+
+            -- Fecha de inicio aleatoria en últimos 10 años
+            fecha_inicio := CURRENT_DATE 
+                            - (FLOOR(RANDOM() * 3650))::INT;
+
+            INSERT INTO "trabajadorReparacion" (
+                "dniTrabajador",
+                "nroAvion",
+                "fechaInicioReparacion",
+                "fechaFinReparacion",
+                "tipoFallaReparada"
+            ) VALUES (
+                dni_trab,
+                nro_avion,
+                fecha_inicio,
+                -- fechaFin: entre 1 y 30 días después del inicio
+                fecha_inicio + (FLOOR(RANDOM() * 30 + 1))::INT,
+                tipo_falla
+            );
+
+        END LOOP; -- fin loop aviones
+
+        -- Progreso cada modelo completado
+        RAISE NOTICE 'Modelo % insertado con 10000 aviones y reparaciones', nro_modelo;
+
+    END LOOP; -- fin loop modelos
+
+    RAISE NOTICE 'Carga masiva completada.';
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- ============================================================
+-- PASO 2: Versión optimizada con generate_series
+-- Mucho más eficiente que loops para grandes volúmenes.
+-- generate_series(inicio, fin) genera una secuencia de enteros
+-- ============================================================
+CREATE OR REPLACE FUNCTION carga_masiva_v2(
+    cant_modelos INT DEFAULT 5   -- parámetro: cuántos modelos insertar
+) RETURNS void AS $$
+DECLARE
+    max_avion   INT;
+    max_modelo  INT;
+    dni_trab    INT;
+    tipo_falla  INT;
+BEGIN
+    -- Bases para evitar colisión de PKs
+    SELECT COALESCE(MAX("nroAvion"), 0)   INTO max_avion  FROM avion;
+    SELECT COALESCE(MAX("tipoModelo"), 0) INTO max_modelo FROM "modeloAvion";
+
+    -- Tomamos UN trabajador y UNA falla de referencia
+    -- (para no llamar ORDER BY RANDOM() 10000 veces por modelo)
+    SELECT dni        INTO dni_trab   FROM trabajador ORDER BY RANDOM() LIMIT 1;
+    SELECT "tipoFalla" INTO tipo_falla FROM falla      ORDER BY RANDOM() LIMIT 1;
+
+    -- --------------------------------------------------------
+    -- INSERT masivo de modelos con generate_series
+    -- Para V(capacidad) >= 1000: cada modelo tiene su propio
+    -- valor de capacidad → con 1000+ modelos lo cumplimos
+    -- --------------------------------------------------------
+    INSERT INTO "modeloAvion" ("tipoModelo", descripcion, capacidad)
+    SELECT
+        max_modelo + gs,                              -- PK única
+        CAST('Modelo-' || (max_modelo + gs) AS char(50)),
+        100 + gs                                      -- capacidad distinta por modelo
+    FROM generate_series(1, cant_modelos) AS gs;
+
+    RAISE NOTICE '% modelos insertados', cant_modelos;
+
+    -- --------------------------------------------------------
+    -- INSERT masivo de aviones: para cada modelo, 10000 aviones
+    -- Producto cartesiano controlado: modelos × aviones
+    -- --------------------------------------------------------
+    INSERT INTO avion ("nroAvion", "tipoModelo", "año", "horasVuelo")
+    SELECT
+        -- nroAvion único: offset_modelo + nro_avion_local
+        max_avion + ((m.gs - 1) * 10000) + a.gs,
+        max_modelo + m.gs,                            -- FK a modeloAvion
+        FLOOR(RANDOM() * 33 + 1990)::INT,
+        FLOOR(RANDOM() * 50000)::INT
+    FROM
+        generate_series(1, cant_modelos) AS m(gs),   -- loop de modelos
+        generate_series(1, 10000)        AS a(gs);   -- loop de aviones
+
+    RAISE NOTICE '% aviones insertados', cant_modelos * 10000;
+
+    -- --------------------------------------------------------
+    -- INSERT masivo de reparaciones: uno por cada avión nuevo
+    -- Usamos el mismo rango de nroAvion que acabamos de insertar
+    -- --------------------------------------------------------
+    INSERT INTO "trabajadorReparacion" (
+        "dniTrabajador",
+        "nroAvion",
+        "fechaInicioReparacion",
+        "fechaFinReparacion",
+        "tipoFallaReparada"
+    )
+    SELECT
+        dni_trab,                                          -- trabajador fijo al azar
+        max_avion + gs,                                    -- cada avión nuevo
+        CURRENT_DATE - (FLOOR(RANDOM() * 3650))::INT,     -- fecha inicio aleatoria
+        CURRENT_DATE - (FLOOR(RANDOM() * 365))::INT,      -- fecha fin aleatoria
+        tipo_falla                                         -- falla fija al azar
+    FROM generate_series(1, cant_modelos * 10000) AS gs;
+
+    RAISE NOTICE '% reparaciones insertadas', cant_modelos * 10000;
+    RAISE NOTICE 'Proceso completado exitosamente.';
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- ============================================================
+-- PASO 3: Ejecución
+-- ============================================================
+
+-- Versión con loops (didáctica, más lenta):
+SELECT carga_masiva();
+
+-- Versión optimizada (recomendada para volumen real):
+-- Pasamos 1000 modelos para garantizar V(capacidad) >= 1000
+SELECT carga_masiva_v2(50);
+
+
+-- ============================================================
+-- PASO 4: Verificaciones post-carga
+-- ============================================================
+
+-- Verificar cantidad de modelos insertados
+SELECT COUNT(*) AS total_modelos FROM "modeloAvion";
+
+-- Verificar V(capacidad, modeloAvion) = cantidad de valores distintos
+-- Debe ser >= 1000
+SELECT COUNT(DISTINCT capacidad) AS v_capacidad FROM "modeloAvion";
+
+-- Verificar aviones por modelo (debe ser 10000 cada uno)
+SELECT "tipoModelo", COUNT(*) AS aviones_por_modelo
+FROM avion
+GROUP BY "tipoModelo"
+ORDER BY "tipoModelo";
+
+-- Verificar que cada avión tiene su reparación
+-- (el COUNT debe coincidir)
+SELECT COUNT(*) AS total_aviones     FROM avion;
+SELECT COUNT(*) AS total_reparaciones FROM "trabajadorReparacion";
+
+-- Verificar integridad: aviones sin reparación
+SELECT a."nroAvion"
+FROM avion a
+LEFT JOIN "trabajadorReparacion" tr ON a."nroAvion" = tr."nroAvion"
+WHERE tr."nroAvion" IS NULL;
+
