@@ -2,13 +2,14 @@ DO $$
 DECLARE
 
     MAX_AVIONES CONSTANT integer := 10000;
-    MAX_MODELOS CONSTANT integer := 5;
+    MAX_MODELOS CONSTANT integer := 100;
 
     -- Variables para datos aleatorios
     dni_random integer;
     falla_random integer;
     id_nuevo_modelo integer;
     nro_nuevo_avion integer;
+	nueva_capacidad integer; -- Variable para nuevas capacidades
     
     cont_model integer; -- Contador para los modelos
     cont_avion integer; -- Contador para los aviones
@@ -16,13 +17,14 @@ DECLARE
 BEGIN
     SELECT MAX("tipoModelo") + 1 INTO id_nuevo_modelo FROM avion;
     SELECT MAX("nroAvion") + 1 INTO nro_nuevo_avion FROM avion;
+	SELECT MAX(capacidad) + 1 INTO nueva_capacidad FROM "modeloAvion";
     
     -- Insertamos 5 modelos
     FOR cont_model IN 1..MAX_MODELOS LOOP
         
         -- 1. Insertar el Modelo de Avión
         INSERT INTO "modeloAvion" ("tipoModelo", descripcion, capacidad)
-        VALUES (id_nuevo_modelo, 'Modelo Estandar ' || cont_model, 250);
+        VALUES (id_nuevo_modelo, 'Modelo Estandar ' || cont_model, nueva_capacidad);
 
         -- 2. Bucle para insertar 10.000 aviones por cada modelo
         FOR cont_avion IN 1..MAX_AVIONES LOOP        
@@ -42,11 +44,12 @@ BEGIN
             -- Incrementar el contador de número de avión para que sea único
             nro_nuevo_avion := nro_nuevo_avion + 1;
         END LOOP;
-        RAISE NOTICE 'Finalizada la carga de % aviones para el modelo %', MAX_AVIONES, id_nuevo_modelo;
+        RAISE NOTICE 'Finalizada la carga de % aviones para el modelo % con capacidad %', MAX_AVIONES, id_nuevo_modelo, nueva_capacidad;
         id_nuevo_modelo := id_nuevo_modelo + 1;
+		nueva_capacidad := nueva_capacidad + 1;
     END LOOP;
     RAISE NOTICE 'Finalizada la carga de % modelos', MAX_MODELOS;
 
     -- Verificación de la "EstadísticaV" (Suma de capacidades)
-    RAISE NOTICE 'Capacidad total actual en modeloAvion: %', (SELECT SUM(capacidad) FROM "modeloAvion");
+    RAISE NOTICE 'Numero de Capacidades distintas en modeloAvion: %', (SELECT COUNT(DISTINCT capacidad) FROM "modeloAvion");
 END $$;
