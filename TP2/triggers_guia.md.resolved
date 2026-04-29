@@ -1,0 +1,237 @@
+# 🔔 Triggers en SQL — Guía Completa
+
+## ¿Qué es un Trigger?
+
+Un **trigger** (o *disparador*) es un procedimiento almacenado que se **ejecuta automáticamente** en respuesta a ciertos eventos sobre una tabla o vista. No se llama manualmente: la base de datos lo dispara sola cuando ocurre el evento definido.
+
+```
+EVENTO (INSERT / UPDATE / DELETE)
+        ↓
+   [Trigger se activa]
+        ↓
+   Ejecuta la función asociada
+```
+
+---
+
+## Anatomía de un Trigger en PostgreSQL
+
+Un trigger tiene **dos partes**:
+
+### 1. La función del trigger
+```sql
+CREATE FUNCTION mi_funcion() RETURNS trigger AS $$
+BEGIN
+    -- lógica aquí
+    RETURN NEW;  -- o OLD, o NULL
+END;
+$$ LANGUAGE plpgsql;
+```
+
+### 2. El trigger en sí
+```sql
+CREATE TRIGGER nombre_trigger
+    BEFORE | AFTER
+    INSERT | UPDATE | DELETE
+    ON nombre_tabla
+    FOR EACH ROW | FOR EACH STATEMENT
+    EXECUTE PROCEDURE mi_funcion();
+```
+
+---
+
+## ⏱️ BEFORE vs AFTER — ¿Cuándo se ejecuta?
+
+| | `BEFORE` | `AFTER` |
+|---|---|---|
+| **Cuándo** | Antes de que el cambio ocurra en la tabla | Después de que el cambio ya ocurrió |
+| **Puede cancelar la operación** | ✅ Sí (retornando NULL) | ❌ No |
+| **Puede modificar los datos** | ✅ Sí (modificando NEW) | ❌ No tiene efecto |
+| **Ve el estado final** | ❌ El cambio aún no se aplicó | ✅ El cambio ya está en la tabla |
+| **Uso típico** | Validación, modificación de datos | Auditoría, notificaciones, sincronización |
+
+> [!IMPORTANT]
+> En el ejemplo de clase hay un comentario clave: **si se usa `AFTER` en lugar de `BEFORE`, el trigger no frena el INSERT y no llena los campos** `last_date` y `last_user`. Esto muestra perfectamente la diferencia.
+
+### ¿Por qué?
+- Con `BEFORE`: modificás `NEW` antes de que se escriba → los cambios se guardan.
+- Con `AFTER`: el registro ya se insertó → modificar `NEW` ya no sirve de nada.
+
+---
+
+## 🔄 OLD vs NEW — Los registros del trigger
+
+Estas son **variables especiales** disponibles dentro de la función del trigger:
+
+| Variable | Disponible en | Contiene |
+|---|---|---|
+| `NEW` | `INSERT`, `UPDATE` | El registro **nuevo** (el que se va a insertar/actualizar) |
+| `OLD` | `DELETE`, `UPDATE` | El registro **viejo** (el que existía antes) |
+
+### En cada operación:
+
+| Operación | `OLD` | `NEW` |
+|---|---|---|
+| `INSERT` | ❌ No existe (es NULL) | ✅ El nuevo registro |
+| `UPDATE` | ✅ El valor anterior | ✅ El valor nuevo |
+| `DELETE` | ✅ El registro que se borra | ❌ No existe (es NULL) |
+
+### Ejemplo visual — UPDATE:
+```
+Tabla antes:  | empname: 'Juan' | salary: 50000 |
+              
+UPDATE emp SET salary = 60000 WHERE empname = 'Juan';
+
+Dentro del trigger:
+  OLD.empname = 'Juan'    OLD.salary = 50000
+  NEW.empname = 'Juan'    NEW.salary = 60000
+```
+
+### Modificar NEW (solo en BEFORE):
+```sql
+-- Podés modificar los valores antes de que se guarden
+NEW.last_date := current_timestamp;  -- agrega fecha automática
+NEW.last_user := current_user;       -- agrega usuario automático
+```
+
+---
+
+## 👥 FOR EACH ROW vs FOR EACH STATEMENT
+
+| | `FOR EACH ROW` | `FOR EACH STATEMENT` |
+|---|---|---|
+| **Cuándo se dispara** | Una vez **por cada fila** afectada | Una vez **por toda la operación** |
+| `OLD` / `NEW` disponibles | ✅ Sí | ❌ No |
+| **Caso típico** | Validar o modificar cada registro | Registrar que "se ejecutó un DELETE" |
+
+### Ejemplo:
+```sql
+-- Si hacés: DELETE FROM emp WHERE salary < 0;
+-- Y eso borra 5 filas:
+
+FOR EACH ROW      → el trigger se ejecuta 5 veces (una por fila)
+FOR EACH STATEMENT → el trigger se ejecuta 1 sola vez
+```
+
+---
+
+## 📦 ¿Qué retorna la función del trigger?
+
+| Retorno | Efecto |
+|---|---|
+| `RETURN NEW` | Continúa la operación con el registro (posiblemente modificado) |
+| `RETURN OLD` | Continúa con el registro viejo (útil en UPDATE para ignorar cambios) |
+| `RETURN NULL` | **Cancela la operación** (solo funciona en BEFORE) |
+
+---
+
+## 📌 ¿Cuándo usar un Trigger?
+
+### ✅ Casos donde SÍ conviene usar triggers:
+
+| Caso de uso | Descripción |
+|---|---|
+| **Auditoría** | Registrar automáticamente quién hizo qué y cuándo |
+| **Validaciones complejas** | Reglas de negocio que no pueden expresarse con constraints simples |
+| **Auto-completar campos** | Llenar `last_modified`, `created_by`, `updated_at` automáticamente |
+| **Sincronización** | Mantener tablas de resumen o totales actualizados |
+| **Soft delete** | Marcar registros como eliminados en vez de borrarlos realmente |
+| **Historial de cambios** | Copiar registros viejos a una tabla de historia antes de modificarlos |
+
+### ❌ Casos donde NO conviene usar triggers:
+
+| Situación | Por qué evitarlos |
+|---|---|
+| **Lógica de negocio general** | Dificulta el debugging y el mantenimiento |
+| **Operaciones masivas** | Pueden ser muy lentos si se disparan fila por fila |
+| **Cuando hay una alternativa más clara** | Si un constraint o stored procedure es más legible, usalo |
+| **Cuando el comportamiento debe ser explícito** | Los triggers son "invisibles" para el desarrollador que hace el INSERT |
+
+> [!WARNING]
+> Los triggers pueden volverse una "caja negra": alguien hace un `INSERT` y pasan cosas inesperadas. Documentalos siempre.
+
+---
+
+## 🔍 Análisis del Ejemplo de Clase
+
+```sql
+-- ejemplo 1 trigger(1).sql
+CREATE FUNCTION emp_stamp() RETURNS trigger AS $emp_stamp$
+BEGIN
+    -- Validación 1: empname no puede ser NULL
+    IF NEW.empname IS NULL THEN
+        RAISE EXCEPTION 'empname cannot be null';
+    END IF;
+
+    -- Validación 2: salary no puede ser NULL
+    IF NEW.salary IS NULL THEN
+        RAISE EXCEPTION '% cannot have null salary', NEW.empname;
+    END IF;
+
+    -- Validación 3: salary no puede ser negativo
+    IF NEW.salary < 0 THEN
+        RAISE EXCEPTION '% cannot have a negative salary', NEW.empname;
+    END IF;
+
+    -- Auto-completar campos de auditoría
+    NEW.last_date := current_timestamp;
+    NEW.last_user := current_user;
+    RETURN NEW;
+END;
+$emp_stamp$ LANGUAGE plpgsql;
+
+CREATE TRIGGER emp_stamp
+    BEFORE INSERT OR UPDATE ON emp   -- ← BEFORE es clave aquí
+    FOR EACH ROW
+    EXECUTE PROCEDURE emp_stamp();
+```
+
+### ¿Qué hace este trigger?
+
+```
+INSERT INTO emp (empname, salary) VALUES ('Empleado 3', 30000)
+                                                ↓
+                                    [Trigger emp_stamp se activa]
+                                                ↓
+                              ¿empname es NULL?  → No → continúa
+                              ¿salary es NULL?   → No → continúa  
+                              ¿salary < 0?       → No → continúa
+                                                ↓
+                              NEW.last_date = '2026-04-29 18:45:00'
+                              NEW.last_user = 'postgres'
+                                                ↓
+                              RETURN NEW → Se guarda con los campos llenos
+```
+
+### ¿Qué pasa con el segundo INSERT?
+```sql
+INSERT INTO emp (empname, salary) VALUES ('Empleado 2', -110000)
+```
+→ `salary < 0` → `RAISE EXCEPTION` → **el INSERT se cancela**, no se guarda nada.
+
+---
+
+## 📋 Tipos de Triggers (resumen)
+
+```
+                    ┌─────────────────────────────────────┐
+                    │           TRIGGER                   │
+                    └─────────────────┬───────────────────┘
+              ┌──────────────┬────────┴────────┬──────────────┐
+           INSERT         UPDATE            DELETE         TRUNCATE
+              │              │                 │
+         ┌────┴────┐    ┌────┴────┐       ┌────┴────┐
+       BEFORE    AFTER BEFORE   AFTER   BEFORE   AFTER
+         │              │
+   FOR EACH ROW    FOR EACH STATEMENT
+```
+
+---
+
+## 💡 Tips y Buenas Prácticas
+
+1. **Nombrá los triggers descriptivamente**: `audit_empleados_insert`, `validar_stock_before_venta`
+2. **Documentá siempre**: Los triggers son invisibles para quien hace el DML
+3. **Cuidado con triggers en cascada**: Un trigger puede disparar otro trigger → loops infinitos
+4. **Usá BEFORE para validar y modificar**: Usá AFTER para efectos secundarios (logs, notificaciones)
+5. **Mantelos simples**: Si la función del trigger es muy compleja, es una señal de que la lógica debería estar en otra parte
