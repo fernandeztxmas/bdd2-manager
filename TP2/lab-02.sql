@@ -78,11 +78,61 @@ CREATE TRIGGER tg_audit_avion_delete
 -- PRUEBAS DE LOS TRIGGERS
 -- ============================================================
 
--- INSERT: debería disparar tg_audit_avion_insert y registrar en audit
 INSERT INTO avion ("nroAvion", "tipoModelo", "año", "horasVuelo") VALUES (999, 737, 2020, 1500);
 
--- DELETE: debería disparar tg_audit_avion_delete y registrar en audit
-DELETE FROM avion WHERE nroAvion = 999;
+DELETE FROM avion WHERE "nroAvion" = 999;
 
--- Verificar que quedaron los dos registros de auditoría (uno INSERT, uno DELETE)
 SELECT * FROM audit;
+
+-- ============================================================
+-- 1. CREACIÓN DE USUARIOS Y PERMISOS BASE (Como Administrador)
+-- ============================================================
+CREATE USER "userA" WITH PASSWORD 'pass123';
+CREATE USER "userB" WITH PASSWORD 'pass1234';
+
+GRANT CONNECT ON DATABASE "tp-1" TO "userA";
+GRANT CONNECT ON DATABASE "tp-1" TO "userB";
+
+GRANT USAGE ON SCHEMA public TO "userA", "userB";
+
+-- Permisos para userA
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO "userA";
+GRANT INSERT ON audit TO "userA" WITH GRANT OPTION;
+
+-- Permisos para userB
+GRANT SELECT, INSERT, UPDATE ON avion, piloto, "pilotoAvion" TO "userB";
+
+
+-- ============================================================
+-- 2. DELEGACIÓN DE PERMISOS (Como userA)
+-- ============================================================
+SET ROLE "userA";
+
+-- Como userA tiene GRANT OPTION, le da permiso a userB 
+-- ANTES de que userB intente hacer cualquier cosa
+GRANT INSERT ON audit TO "userB";
+
+RESET ROLE;
+
+
+-- ============================================================
+-- 3. PRUEBAS (Como userB)
+-- ============================================================
+SET ROLE "userB";
+
+-- Esto ahora funcionará y registrará a "userB" en la auditoría
+INSERT INTO public.avion("nroAvion", "tipoModelo", "año", "horasVuelo")
+VALUES (58, 425, 2026, 13);
+
+-- Esto funcionará (tiene permiso SELECT)
+SELECT * FROM avion LIMIT 1;
+
+-- Esto funcionará y también disparará la auditoría
+UPDATE avion SET "horasVuelo" = 0 WHERE "nroAvion" = 58;
+
+-- Esto fallará correctamente dando "Permiso denegado" (no tiene DELETE)
+DELETE FROM avion WHERE "nroAvion" = 58;
+
+-- Volvemos a ser el administrador
+RESET ROLE;
+
